@@ -1,0 +1,31 @@
+{
+  "interfaces": {
+    "wan": "eth0",
+    "lan": "eth0"
+  },
+  "server_ip": "",
+  "sites": {
+    "facebook": {"enabled": true},
+    "hotmail": {"enabled": true},
+    "youtube": {"enabled": true}
+  },
+  "client_server": {
+    "enabled": false,
+    "client_ip": "192.168.100.50",
+    "server_ip": "",
+    "protocols": ["tcp", "udp", "icmp"]
+  },
+  "mac_rules": [
+    {
+      "name": "Cliente",
+      "mac": "AA:BB:CC:DD:EE:FF",
+      "enabled": false
+    }
+  ],
+  "connection_limits": [
+    {"name": "HTTP", "proto": "tcp", "port": 80, "max": 10, "enabled": true},
+    {"name": "HTTPS", "proto": "tcp", "port": 443, "max": 10, "enabled": true},
+    {"name": "SSH", "proto": "tcp", "port": 22, "max": 3, "enabled": false}
+  ],
+  "default_action": "DROP"
+}

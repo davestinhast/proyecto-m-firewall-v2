@@ -1,0 +1,6 @@
+__pycache__/
+*.py[cod]
+.venv/
+config/firewall.json
+rules/*.rules.v4
+rules/*.ipset
