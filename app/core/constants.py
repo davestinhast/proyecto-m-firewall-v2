@@ -7,6 +7,8 @@ RULES_FILE = f"{BASE_DIR}/rules/project_m.rules.v4"
 IPSET_FILE = f"{BASE_DIR}/rules/project_m.ipset"
 DNSMASQ_FILE = "/etc/dnsmasq.d/proyecto-m-youtube.conf"
 LOG_FILE = "/var/log/proyecto-m-clean/rejected.log"
+HOSTS_MARKER_BEGIN = "# BEGIN M-FIREWALL-CLEAN"
+HOSTS_MARKER_END = "# END M-FIREWALL-CLEAN"
 
 CHAIN_REJECT = "PM_REJECT"
 CHAIN_WEB = "PM_WEBBLOCK"

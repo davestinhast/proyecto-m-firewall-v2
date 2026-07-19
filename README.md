@@ -34,11 +34,24 @@ sudo bash scripts/install.sh
 2. Activa YouTube.
 3. Configura cliente-servidor, MAC o limites si el docente lo pide.
 4. Pulsa `Guardar y Activar`.
-5. En el cliente usa el comando que aparece en la app:
+5. Espera los mensajes `[OK]` de la consola y la tarjeta `Estado real del cortafuegos`.
+6. En el cliente usa el comando que aparece en la app:
 
 ```bash
 sudo ip route replace default via IP_DE_KALI
 ```
+
+La app verifica automaticamente:
+
+- `PM_WEBBLOCK` existe y apunta a `PM_REJECT`.
+- `OUTPUT` pasa por `PM_WEBBLOCK` para bloquear la propia Kali.
+- `FORWARD` pasa por `PM_WEBBLOCK` para bloquear clientes.
+- `PM_YOUTUBE` tiene entradas.
+- `dnsmasq` y `/etc/hosts` quedaron configurados.
+
+Si YouTube estaba abierto antes de aplicar, cierra esa pestaña o reinicia el navegador. La app limpia DNS y conntrack, pero el navegador puede conservar conexiones/cache propias por unos segundos.
+
+Al cerrar la app, pregunta si quieres restaurar todo a valores predeterminados o dejar el cortafuegos activo.
 
 ## Diagnostico
 

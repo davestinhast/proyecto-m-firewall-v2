@@ -32,6 +32,8 @@ def build_rules(cfg: dict, resolved: dict[str, list[str]]) -> str:
         lines += [
             f"-A PREROUTING {iface}-p udp --dport 53 -j DNAT --to-destination {server_ip}:53",
             f"-A PREROUTING {iface}-p tcp --dport 53 -j DNAT --to-destination {server_ip}:53",
+            "-A OUTPUT -p udp --dport 53 -m owner ! --uid-owner 0 -j DNAT --to-destination 127.0.0.1:53",
+            "-A OUTPUT -p tcp --dport 53 -m owner ! --uid-owner 0 -j DNAT --to-destination 127.0.0.1:53",
         ]
     lines += [
         f"-A POSTROUTING -o {wan} -j MASQUERADE",

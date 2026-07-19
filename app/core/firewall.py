@@ -1,7 +1,15 @@
 from pathlib import Path
 
 from app.core import dnsmasq
-from app.core.constants import BASE_DIR, CONFIG_FILE, IPSET_FILE, LOG_FILE, RULES_FILE
+from app.core.constants import (
+    BASE_DIR,
+    HOSTS_MARKER_BEGIN,
+    HOSTS_MARKER_END,
+    IPSET_FILE,
+    LOG_FILE,
+    RULES_FILE,
+    SITES,
+)
 from app.core.domains import build_ipset_restore, enabled_sites, resolve_enabled
 from app.core.network import is_linux, is_root, run
 from app.core.rules import build_rules
@@ -25,6 +33,7 @@ def apply_firewall(cfg: dict, progress=None) -> tuple[bool, str]:
 
     _emit(progress, "Activando IP forwarding")
     run(["sysctl", "-w", "net.ipv4.ip_forward=1"])
+    _emit(progress, "[OK] sysctl net.ipv4.ip_forward=1")
 
     resolved = {}
     if enabled:
@@ -37,10 +46,15 @@ def apply_firewall(cfg: dict, progress=None) -> tuple[bool, str]:
         rc, _, err = run(["ipset", "restore"], ipset_text)
         if rc != 0:
             return False, f"ipset fallo: {err.strip()}"
+        _emit(progress, "[OK] ipset restore")
 
         _emit(progress, "Configurando dnsmasq")
         Path(dnsmasq.target_path()).write_text(dnsmasq.build_dnsmasq_config(enabled), encoding="utf-8")
         run(["systemctl", "restart", "dnsmasq"])
+        _emit(progress, "[OK] dnsmasq configurado")
+        _emit(progress, "Blindando /etc/hosts")
+        _write_hosts_block(enabled)
+        _emit(progress, "[OK] /etc/hosts actualizado")
 
     _emit(progress, "Generando iptables")
     rules_text = build_rules(cfg, resolved)
@@ -48,13 +62,20 @@ def apply_firewall(cfg: dict, progress=None) -> tuple[bool, str]:
     rc, _, err = run(["iptables-restore", "--test"], rules_text)
     if rc != 0:
         return False, f"iptables-restore --test fallo: {err.strip()}"
+    _emit(progress, "[OK] iptables-restore --test")
 
     _emit(progress, "Aplicando iptables")
     rc, _, err = run(["iptables-restore"], rules_text)
     if rc != 0:
         return False, f"iptables-restore fallo: {err.strip()}"
+    _emit(progress, "[OK] iptables-restore aplicado")
 
     run(["conntrack", "-F"])
+    run(["resolvectl", "flush-caches"])
+    run(["systemd-resolve", "--flush-caches"])
+    _drop_ipv6(progress)
+    status = firewall_status()
+    _emit(progress, status["summary"])
     return True, f"Cortafuegos activo. Sitios: {', '.join(enabled)}"
 
 
@@ -71,8 +92,75 @@ def stop_firewall() -> tuple[bool, str]:
         Path(dnsmasq.target_path()).unlink(missing_ok=True)
     except Exception:
         pass
+    _clear_hosts_block()
     run(["systemctl", "restart", "dnsmasq"])
+    for chain in ["INPUT", "FORWARD", "OUTPUT"]:
+        run(["ip6tables", "-P", chain, "ACCEPT"])
+    for table in ["filter"]:
+        run(["ip6tables", "-t", table, "-F"])
+        run(["ip6tables", "-t", table, "-X"])
     return True, "Cortafuegos apagado."
+
+
+def firewall_status() -> dict:
+    if not is_linux():
+        return {"active": False, "summary": "Modo demo: sin iptables Linux.", "checks": {}}
+
+    checks = {}
+    rc, out, _ = run(["iptables", "-L", "PM_WEBBLOCK", "-n", "-v"])
+    checks["PM_WEBBLOCK"] = rc == 0 and "PM_REJECT" in out
+    rc, out, _ = run(["iptables", "-L", "OUTPUT", "-n", "-v"])
+    checks["OUTPUT -> PM_WEBBLOCK"] = rc == 0 and "PM_WEBBLOCK" in out
+    rc, out, _ = run(["iptables", "-L", "FORWARD", "-n", "-v"])
+    checks["FORWARD -> PM_WEBBLOCK"] = rc == 0 and "PM_WEBBLOCK" in out
+    rc, out, _ = run(["ipset", "list", "PM_YOUTUBE", "-terse"])
+    checks["PM_YOUTUBE"] = rc == 0 and "Number of entries: 0" not in out
+    checks["dnsmasq"] = Path(dnsmasq.target_path()).exists()
+    checks["hosts"] = HOSTS_MARKER_BEGIN in Path("/etc/hosts").read_text(encoding="utf-8", errors="ignore") if Path("/etc/hosts").exists() else False
+    active = all(checks.values())
+    ok_count = sum(1 for value in checks.values() if value)
+    summary = f"Estado real: {ok_count}/{len(checks)} verificaciones OK."
+    return {"active": active, "summary": summary, "checks": checks}
+
+
+def _drop_ipv6(progress=None) -> None:
+    _emit(progress, "Bloqueando IPv6 para evitar bypass")
+    for chain in ["INPUT", "FORWARD", "OUTPUT"]:
+        run(["ip6tables", "-P", chain, "DROP"])
+
+
+def _write_hosts_block(enabled: list[str]) -> None:
+    hosts_path = Path("/etc/hosts")
+    existing = hosts_path.read_text(encoding="utf-8", errors="ignore") if hosts_path.exists() else ""
+    clean = _strip_hosts_block(existing)
+    lines = [HOSTS_MARKER_BEGIN]
+    for key in enabled:
+        for domain in SITES[key]["domains"]:
+            lines.append(f"0.0.0.0 {domain}")
+    lines.append(HOSTS_MARKER_END)
+    hosts_path.write_text(clean.rstrip() + "\n" + "\n".join(lines) + "\n", encoding="utf-8")
+
+
+def _clear_hosts_block() -> None:
+    hosts_path = Path("/etc/hosts")
+    if not hosts_path.exists():
+        return
+    hosts_path.write_text(_strip_hosts_block(hosts_path.read_text(encoding="utf-8", errors="ignore")).rstrip() + "\n", encoding="utf-8")
+
+
+def _strip_hosts_block(text: str) -> str:
+    lines = []
+    skipping = False
+    for line in text.splitlines():
+        if line.strip() == HOSTS_MARKER_BEGIN:
+            skipping = True
+            continue
+        if line.strip() == HOSTS_MARKER_END:
+            skipping = False
+            continue
+        if not skipping:
+            lines.append(line)
+    return "\n".join(lines)
 
 
 def _emit(progress, msg: str) -> None:

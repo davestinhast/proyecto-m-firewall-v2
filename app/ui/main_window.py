@@ -1,3 +1,5 @@
+import webbrowser
+
 from PySide6.QtCore import Qt, QThread, Signal
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -18,7 +20,7 @@ from PySide6.QtWidgets import (
 
 from app.core.config import load_config, save_config
 from app.core.constants import APP_NAME, APP_VERSION, LOG_FILE, SITES
-from app.core.firewall import apply_firewall, stop_firewall
+from app.core.firewall import apply_firewall, firewall_status, stop_firewall
 from app.core.network import own_ip_and_iface
 
 
@@ -43,13 +45,24 @@ class StopWorker(QThread):
         self.finished.emit(ok, msg)
 
 
+class StatusWorker(QThread):
+    finished = Signal(dict)
+
+    def run(self):
+        self.finished.emit(firewall_status())
+
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.cfg = load_config()
         self.worker = None
         self.stop_worker = None
+        self.status_worker = None
+        self.firewall_active = False
         self.checks: dict[str, QCheckBox] = {}
+        self.site_status_labels: dict[str, QLabel] = {}
+        self.status_items: dict[str, QLabel] = {}
         self.conn_checks: list[QCheckBox] = []
         self.conn_ports: list[QLineEdit] = []
         self.conn_max: list[QLineEdit] = []
@@ -58,6 +71,7 @@ class MainWindow(QMainWindow):
         self._load_styles()
         self._build()
         self._refresh_detected()
+        self._refresh_status()
 
     def _load_styles(self):
         from pathlib import Path
@@ -125,6 +139,7 @@ class MainWindow(QMainWindow):
         label = QLabel("Bloqueo de sitios")
         label.setObjectName("label_title")
         layout.addWidget(label)
+        layout.addWidget(self._status_card())
         for key, site in SITES.items():
             row = QFrame()
             row.setObjectName("card")
@@ -139,9 +154,49 @@ class MainWindow(QMainWindow):
             check.setChecked(self.cfg.get("sites", {}).get(key, {}).get("enabled", False))
             self.checks[key] = check
             r.addWidget(check)
+            status = QLabel("Pendiente")
+            status.setMinimumWidth(90)
+            status.setStyleSheet("color: #f59e0b; font-size: 12px; font-weight: 700; background: transparent;")
+            self.site_status_labels[key] = status
+            r.addWidget(status)
+            open_btn = QPushButton(self._site_button_text(key))
+            open_btn.setObjectName("btn_secondary")
+            open_btn.setToolTip(f"Abrir {site['label']} para probar el bloqueo.")
+            open_btn.clicked.connect(lambda _, domain=site["domains"][0]: webbrowser.open(f"https://{domain}"))
+            r.addWidget(open_btn)
             layout.addWidget(row)
-        layout.addStretch()
+        hint = QLabel("Despues de activar, la app verifica cadenas, ipset, DNS local y hosts automaticamente.")
+        hint.setObjectName("label_hint")
+        layout.addWidget(hint)
         return frame
+
+    def _status_card(self) -> QFrame:
+        frame = QFrame()
+        frame.setObjectName("card")
+        layout = QVBoxLayout(frame)
+        title = QLabel("Estado real del cortafuegos")
+        title.setObjectName("label_subtitle")
+        layout.addWidget(title)
+        grid = QHBoxLayout()
+        for name in ["PM_WEBBLOCK", "OUTPUT -> PM_WEBBLOCK", "FORWARD -> PM_WEBBLOCK", "PM_YOUTUBE", "dnsmasq", "hosts"]:
+            lbl = QLabel(f"{name}: -")
+            lbl.setObjectName("label_mono")
+            lbl.setMinimumWidth(150)
+            self.status_items[name] = lbl
+            grid.addWidget(lbl)
+        layout.addLayout(grid)
+        row = QHBoxLayout()
+        verify = QPushButton("Verificar estado")
+        verify.setObjectName("btn_secondary")
+        verify.clicked.connect(self._refresh_status)
+        row.addWidget(verify)
+        row.addStretch()
+        layout.addLayout(row)
+        return frame
+
+    def _site_button_text(self, key: str) -> str:
+        labels = {"facebook": "[FB] Abrir", "hotmail": "[HM] Abrir", "youtube": "[YT] Abrir"}
+        return labels.get(key, "Abrir")
 
     def _network_tab(self) -> QWidget:
         page = QWidget()
@@ -370,6 +425,7 @@ class MainWindow(QMainWindow):
         self.status_lbl.setText(msg)
         self._log(msg)
         self._load_logs()
+        self._refresh_status()
         if not ok:
             QMessageBox.warning(self, "M-FIREWALL", msg)
 
@@ -384,3 +440,57 @@ class MainWindow(QMainWindow):
             return
         lines = path.read_text(encoding="utf-8", errors="ignore").splitlines()
         self.logs_view.setPlainText("\n".join(lines[-250:]))
+
+    def _refresh_status(self):
+        if self.status_worker and self.status_worker.isRunning():
+            return
+        self.status_worker = StatusWorker()
+        self.status_worker.finished.connect(self._on_status)
+        self.status_worker.start()
+
+    def _on_status(self, data: dict):
+        checks = data.get("checks", {})
+        self.firewall_active = bool(data.get("active"))
+        self.status_lbl.setText(data.get("summary", "Estado no disponible."))
+        for name, lbl in self.status_items.items():
+            ok = checks.get(name, False)
+            lbl.setText(f"{name}: {'OK' if ok else 'NO'}")
+            color = "#22c55e" if ok else "#ef4444"
+            lbl.setStyleSheet(f"color: {color}; font-size: 11px; font-weight: 700; background: transparent;")
+        youtube_ok = checks.get("PM_YOUTUBE", False) and checks.get("PM_WEBBLOCK", False)
+        web_ok = checks.get("PM_WEBBLOCK", False)
+        for key, lbl in self.site_status_labels.items():
+            enabled = self.checks[key].isChecked()
+            ok = youtube_ok if key == "youtube" else web_ok
+            if enabled and ok:
+                lbl.setText("Activo")
+                lbl.setStyleSheet("color: #22c55e; font-size: 12px; font-weight: 700; background: transparent;")
+            elif enabled:
+                lbl.setText("Falta")
+                lbl.setStyleSheet("color: #ef4444; font-size: 12px; font-weight: 700; background: transparent;")
+            else:
+                lbl.setText("Apagado")
+                lbl.setStyleSheet("color: #8892a4; font-size: 12px; font-weight: 700; background: transparent;")
+
+    def closeEvent(self, event):
+        if not self.firewall_active:
+            event.accept()
+            return
+        reply = QMessageBox.question(
+            self,
+            "Cerrar M-FIREWALL",
+            "El cortafuegos sigue activo.\n\n¿Quieres restaurar la red a valores predeterminados antes de cerrar?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Yes,
+        )
+        if reply == QMessageBox.StandardButton.Cancel:
+            event.ignore()
+            return
+        if reply == QMessageBox.StandardButton.Yes:
+            ok, msg = stop_firewall()
+            self.status_lbl.setText(msg)
+            if not ok:
+                QMessageBox.warning(self, "M-FIREWALL", msg)
+                event.ignore()
+                return
+        event.accept()
